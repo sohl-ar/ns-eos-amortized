@@ -52,7 +52,7 @@ def stable_branch(curve):
     Ms, Rs, Ls = (np.asarray(a, dtype=float) for a in curve)
     i = int(np.argmax(Ms))
     Ms, Rs, Ls = Ms[: i + 1], Rs[: i + 1], Ls[: i + 1]
-    keep = np.r_[True, np.diff(Ms) > 0] & (np.maximum.accumulate(Ms) == Ms)
+    keep = np.r_[True, Ms[1:] > np.maximum.accumulate(Ms[:-1])]
     return Ms[keep], Rs[keep], Ls[keep]
 
 

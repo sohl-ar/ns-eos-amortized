@@ -72,16 +72,17 @@ def corner_overlay(sets, labels, colors, lo, hi, stem, weights=None, truth=None,
     save(fig, stem)
 
 
-def credible_band(curves, grid):
+def credible_band(curves, grid, interpolate=np.interp):
     """curves: list of (Ms, Y) stable branches -> 5/50/95% of Y at fixed M (NaN above M_max)."""
     Y = np.full((len(curves), len(grid)), np.nan)
     for i, (Ms, y) in enumerate(curves):
         ok = (grid >= Ms[0]) & (grid <= Ms[-1])
-        Y[i, ok] = np.interp(grid[ok], Ms, y)
-    with np.errstate(all="ignore"):
-        q = np.nanpercentile(Y, [5, 50, 95], axis=0)
-    frac = np.mean(~np.isnan(Y), 0)
-    q[:, frac < 0.5] = np.nan     # only where at least half of the EOS support that mass
+        Y[i, ok] = interpolate(grid[ok], Ms, y)
+    q = np.full((3, len(grid)), np.nan)
+    if len(curves):
+        supported = np.mean(np.isfinite(Y), axis=0) >= 0.5
+        if supported.any():
+            q[:, supported] = np.nanpercentile(Y[:, supported], [5, 50, 95], axis=0)     # only where at least half of the EOS support that mass
     return q
 
 
@@ -110,8 +111,8 @@ def mr_lambda_figure(band_sets, labels, colors, nicer, pulsars, gws, stem, m_gri
     a1.set(xlabel="Radius [km]", ylabel=r"Mass [$M_\odot$]", xlim=(8, 16), ylim=(1.0, 2.6))
     a2.set(xlabel=r"Mass [$M_\odot$]", ylabel=r"$\Lambda$", yscale="log", xlim=(1.0, 2.2), ylim=(5, 5000))
     a1.plot([], [], color="0.2", lw=1, label=r"NICER $1\sigma$ / $2\sigma$ (Gaussian summary)")
-    a1.fill_between([], [], color="orange", alpha=0.3, label=r"radio-timing mass $\pm1\sigma$")
-    a1.legend(fontsize=8, loc="upper right")
+    a1.fill_between([], [], color="orange", alpha=0.3, label=r"pulsar mass $\pm1\sigma$")
+    a1.legend(fontsize=8, loc="upper right", title="Bands conditional on reaching each mass", title_fontsize=7)
     a2.errorbar([], [], yerr=[], fmt="s", color="0.2", label=r"GW $\tilde\Lambda$ at $m=\mathcal{M}2^{1/5}$")
     a2.legend(fontsize=8)
     for a in (a1, a2):
@@ -152,7 +153,9 @@ def calibration_figure(ranks, n_samples, stem, sbc_hist, sbc_band, levels, cov, 
         a.axhspan(*sbc_band, color="0.8", alpha=0.6, zorder=0)
         a.set(title=f"SBC ranks {TEX[k]}", xticks=[])
         b = ax[1, k]
-        b.fill_between(levels, levels - 2.58 * se[:, 0], levels + 2.58 * se[:, 0], color="0.85")
+        b.fill_between(levels, levels - 1.96 * se[:, 0], levels + 1.96 * se[:, 0], color="0.85", label="95% pointwise normal band")
+        if k == 0:
+            b.legend(fontsize=7)
         b.plot(levels, cov[:, k], color=C_SBI, lw=2)
         b.plot([0, 1], [0, 1], "k--", lw=1)
         b.set(xlabel="credible level", ylabel="empirical coverage", aspect="equal", xlim=(0, 1), ylim=(0, 1))

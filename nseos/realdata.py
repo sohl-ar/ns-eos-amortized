@@ -37,16 +37,16 @@ NICER = [
      "ref": "Riley et al. 2019, ApJL 887, L21"},
     {"name": "PSR J0740+6620 (NICER)", "type": "nicer", "x": [2.072, 12.39], "sigma": [0.067, 1.140],
      "ref": "Riley et al. 2021, ApJL 918, L27 (mass prior = radio timing)"},
-    {"name": "PSR J0437-4715 (NICER)", "type": "nicer", "x": [1.418, 11.36], "sigma": [0.037, 0.870],
+    {"name": "PSR J0437-4715 (NICER)", "type": "nicer", "x": [1.418, 11.36], "sigma": [0.037, 0.790],
      "ref": "Choudhury et al. 2024, ApJL 971, L20"},
 ]
 PULSARS = [
     {"name": "PSR J0740+6620 (radio)", "type": "pulsar", "x": [2.08], "sigma": [0.07],
      "ref": "Fonseca et al. 2021, ApJL 915, L12", "shared_with": "PSR J0740+6620 (NICER)"},
-    {"name": "PSR J0952-0607 (radio)", "type": "pulsar", "x": [2.35], "sigma": [0.17],
+    {"name": "PSR J0952-0607 (optical companion)", "type": "pulsar", "x": [2.35], "sigma": [0.17],
      "ref": "Romani et al. 2022, ApJL 934, L17"},
     {"name": "PSR J1614-2230 (radio)", "type": "pulsar", "x": [1.908], "sigma": [0.016],
-     "ref": "Fonseca et al. 2021, ApJL 915, L12"},
+     "ref": "Arzoumanian et al. 2018, NANOGrav 11-year data set, Table 8 (ApJS 235, 37)"},
 ]
 
 H0_KM_S_MPC = 67.9
@@ -101,13 +101,14 @@ def parse_gw_file(path, prefer):
                     z = _z_from_dl(dl)
                     m1, m2 = m1d / (1 + z), m2d / (1 + z)
                 l1, l2 = _field(arr, "lambda1", "lambda_1"), _field(arr, "lambda2", "lambda_2")
-                if lt is None and l1 is not None:
+                if lt is None and l1 is not None and l2 is not None:
                     lt = lambda_tilde(m1, m2, l1, l2)
                 mc = chirp_mass(m1, m2)
             if lt is None:
                 continue
             ok = np.isfinite(lt) & np.isfinite(mc)
-            return lt[ok], mc[ok], p
+            if np.count_nonzero(ok) >= 2:
+                return lt[ok], mc[ok], p
     return None
 
 

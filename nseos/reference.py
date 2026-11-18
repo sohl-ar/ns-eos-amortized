@@ -11,6 +11,7 @@ import numpy as np
 
 from .io import load_pickle, save_pickle
 from .likelihood import GridEOS, loglike_catalog_eos
+from functools import lru_cache
 from .metrics import kish_ess
 
 _GRID_CACHE = {}
@@ -20,6 +21,27 @@ def _grid_eos(grid_path):
     if grid_path not in _GRID_CACHE:
         _GRID_CACHE[grid_path] = GridEOS(load_pickle(grid_path))
     return _GRID_CACHE[grid_path]
+
+
+@lru_cache(maxsize=16)
+def _support_fraction(grid_path, lo, hi, mmax_min, mmin_max):
+    # Independent uniform-box draws, shared by every catalog evaluated on this grid.
+    eos = _grid_eos(grid_path)
+    rng = np.random.default_rng(79081)
+    n, count = 65536, 0
+    for _ in range(n // 1024):
+        vals = eos.batch(rng.uniform(lo, hi, size=(1024, len(lo))))
+        count += np.count_nonzero((vals[:, 2] >= 0.5) & (vals[:, 0] >= mmax_min) & (vals[:, 1] <= mmin_max))
+    if count == 0:
+        raise ValueError("No accepted prior draws on this interpolation grid")
+    return float(count / n), n
+
+
+def evidence_fields(log_z, se, grid_path, lo, hi, cfg):
+    frac, n = _support_fraction(grid_path, tuple(lo), tuple(hi), cfg["MMAX_MIN"], cfg["BRANCH_MMIN_MAX"])
+    return {"log_z_box": log_z, "grid_prior_acceptance": frac, "prior_mc_draws": n,
+            "log_z_accepted_prior": log_z - np.log(frac),
+            "log_z_accepted_prior_se": np.hypot(se, np.sqrt((1 - frac) / (frac * n)))}
 
 
 class _LogLike:
@@ -50,6 +72,7 @@ def run_dynesty(catalog, grid_path, sim_cfg, lo, hi, seed=0, nlive=500, dlogz=0.
     import dynesty
     side = checkpoint_file + ".time.json" if checkpoint_file else None
     elapsed_before = 0.0
+    t0 = time.time()
     if checkpoint_file and os.path.exists(checkpoint_file):
         sampler = dynesty.NestedSampler.restore(checkpoint_file)
         if side and os.path.exists(side):
@@ -62,20 +85,21 @@ def run_dynesty(catalog, grid_path, sim_cfg, lo, hi, seed=0, nlive=500, dlogz=0.
         sampler = dynesty.NestedSampler(_LogLike(catalog, grid_path, sim_cfg), _PriorTransform(lo, hi), 4,
                                         nlive=nlive, bound=bound, sample=sample, rstate=np.random.default_rng(seed))
         resume = False
-    t0 = time.time()
     if side:
         with open(side, "w") as fh:
             json.dump({"elapsed_before": elapsed_before, "segment_start": t0}, fh)
     kw = {"checkpoint_file": checkpoint_file, "checkpoint_every": checkpoint_every} if checkpoint_file else {}
-    if resume:
-        sampler.run_nested(resume=True, print_progress=False, **kw)
-    else:
-        sampler.run_nested(dlogz=dlogz, print_progress=False, maxcall=maxcall, **kw)
+    # dynesty's maxcall is a per-invocation limit; ncall includes initial live points.
+    remaining = None if maxcall is None else max(0, maxcall - int(sampler.ncall))
+    sampler.run_nested(resume=resume, dlogz=dlogz, maxcall=remaining, print_progress=False, **kw)
     wall = elapsed_before + time.time() - t0
     res = sampler.results
     w = np.exp(res.logwt - res.logz[-1])
     w /= w.sum()
-    return {"samples": np.asarray(res.samples), "weights": w, "ess": kish_ess(w),
+    if not np.isfinite(res.logz[-1]) or res.logz[-1] <= -1e299:
+        raise RuntimeError("Nested sampler found no positive target likelihood")
+    return {**evidence_fields(float(res.logz[-1]), float(res.logzerr[-1]), grid_path, lo, hi, sim_cfg),
+            "samples": np.asarray(res.samples), "weights": w, "ess": kish_ess(w),
             "logz": float(res.logz[-1]), "logzerr": float(res.logzerr[-1]),
             "ncall": int(np.sum(res.ncall)), "niter": int(res.niter), "wall_s": wall, "seed": seed,
             "nlive": nlive, "sample": sample, "bound": bound, "dlogz": dlogz, "resumed": resume}

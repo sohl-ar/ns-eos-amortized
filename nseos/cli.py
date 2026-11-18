@@ -12,6 +12,21 @@ import time
 from .config import load_config
 
 
+def _completion_key(ctx, stage):
+    # Some reporting stages also consume optional files. A report run before
+    # its upstream stage finishes must refresh when that input first appears.
+    from pathlib import Path
+    from .provenance import digest, file_digest
+    from .stages import SUMMARY_INPUTS
+    names = {"summary": SUMMARY_INPUTS, "economics": ("realdata", "compare_real", "importance"),
+             "reference-real": ("realdata",), "compare-real": ("realdata",),
+             "importance": ("realdata", "compare_real", "reference_synth")}.get(stage, ())
+    items = [file_digest(Path(ctx.paths.result(name))) for name in names]
+    if stage in ("summary", "economics"):
+        items.append(ctx.timings.data)
+    return digest([ctx.paths.tag_for(stage), items])
+
+
 def main(argv=None):
     import sys
     for stream in (sys.stdout, sys.stderr):   # Windows consoles default to cp1252
@@ -58,21 +73,19 @@ def main(argv=None):
     # Completed stages leave a marker holding a fingerprint of the config. Re-running skips them
     # (instant resume after an interruption); a changed config or --force re-runs them, and the
     # stage's own caches still skip any finished heavy work.
-    import hashlib
-    import json
     import os
-    fp = hashlib.sha1(json.dumps({k: v for k, v in cfg.items() if k != "root"}, sort_keys=True,
-                                 default=str).encode()).hexdigest()
     for n in names:
-        marker = ctx.paths.result(f"stage_{n}", "done")
+        marker = ctx.paths.result(f"stage_{n}", "done", stage=n)
+        fp = _completion_key(ctx, n)
         if not a.force and os.path.exists(marker) and open(marker).read().strip() == fp:
             print(f"== stage {n}: already complete for this config (skipping; use --force to redo)", flush=True)
             continue
         t0 = time.time()
         print(f"\n{'=' * 70}\n== stage: {n}\n{'=' * 70}", flush=True)
         STAGES[n](ctx)
-        with open(marker, "w") as fh:
-            fh.write(fp)
+        # Downloads may have materialized catalog inputs during this stage.
+        with open(ctx.paths.result(f"stage_{n}", "done", stage=n), "w") as fh:
+            fh.write(_completion_key(ctx, n))
         print(f"== {n} done in {(time.time() - t0) / 60:.1f} min", flush=True)
 
 

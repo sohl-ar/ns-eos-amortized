@@ -9,7 +9,6 @@ Fixes / additions relative to v1:
   * ``augment=True`` re-simulates the whole catalog from the stored EOS curve every epoch.
 """
 import math
-import os
 
 import numpy as np
 import torch
@@ -25,26 +24,31 @@ class EOSCatalogDataset(Dataset):
                  catalog_fn=None):
         self.samples, self.augment, self.allowed_types = samples, augment, allowed_types
         self.sim_cfg, self.base_seed, self.catalog_fn = sim_cfg, base_seed, catalog_fn
-        self._rng, self._key = None, None
+        self._epoch = 0
+        self.shared_epoch = None
+
+    @property
+    def epoch(self):
+        return self._epoch if self.shared_epoch is None else int(self.shared_epoch.item())
+
+    @epoch.setter
+    def epoch(self, value):
+        self._epoch = int(value)
+        if self.shared_epoch is not None:
+            self.shared_epoch.fill_(value)
 
     def __len__(self):
         return len(self.samples)
 
-    def _get_rng(self):
-        key = (os.getpid(), torch.initial_seed())
-        if self._rng is None or self._key != key:
-            self._rng = np.random.default_rng([self.base_seed, torch.initial_seed() % (2 ** 32), os.getpid()])
-            self._key = key
-        return self._rng
-
     def __getitem__(self, idx):
         s = self.samples[idx]
         if self.augment and "curve" in s:
+            rng = np.random.default_rng([self.base_seed, self.epoch, s.get("idx", idx)])
             branch = tuple(s["curve"])
             if self.catalog_fn is not None:
-                cat = self.catalog_fn(branch, self._get_rng())
+                cat = self.catalog_fn(branch, rng)
             else:
-                cat = simulate_catalog(branch, self._get_rng(), self.sim_cfg, allowed_types=self.allowed_types)
+                cat = simulate_catalog(branch, rng, self.sim_cfg, allowed_types=self.allowed_types)
         else:
             cat = s["catalog"]
             if self.allowed_types is not None:

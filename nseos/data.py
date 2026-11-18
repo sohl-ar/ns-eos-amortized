@@ -24,15 +24,17 @@ def prior_lo_hi(cfg):
 
 
 def _gen_one(idx, seed, n_pc, sim_cfg, prior_bounds, stream=1):
-    from .physics import compute_mr_curve
+    from .physics import solve_sequence
     rng = np.random.default_rng([seed, stream, int(idx)])
     gc = [float(rng.uniform(*prior_bounds[f"gamma{k}"])) for k in range(4)]
     try:
-        branch, reason = accept_eos(compute_mr_curve(gc, n_pc=n_pc), sim_cfg)
+        curve, endpoint = solve_sequence(gc, n_pc=n_pc)
+        branch, reason = accept_eos(curve, sim_cfg)
+        reason = endpoint["reason"] or reason
         if branch is None:
             return {"__rejected__": reason, "idx": int(idx), "theta_eos": gc}
         out = {"idx": int(idx), "theta_eos": gc, "catalog": simulate_catalog(branch, rng, sim_cfg),
-               "curve": np.stack(branch).astype(np.float32)}
+               "endpoint": endpoint, "curve": np.stack(branch).astype(np.float32)}
         out.update(branch_summary(branch))
         return out
     except Exception as e:  # pragma: no cover
@@ -73,6 +75,8 @@ def generate_dataset(cfg, paths, timings, n_cores=None):
         except ImportError:  # pragma: no cover
             tqdm = lambda x, **k: x  # noqa: E731
 
+        log["n_cores"] = n_cores
+
         def flush():
             if buf:
                 save_pickle(os.path.join(shard_dir, f"shard_{log['n_shards']:05d}.pkl"), list(buf))
@@ -85,7 +89,7 @@ def generate_dataset(cfg, paths, timings, n_cores=None):
             save_json(log_path, log)
         flush.t = t0
         with multiprocessing.Pool(n_cores) as pool:
-            for r in tqdm(pool.imap_unordered(worker, range(start, start + n_try), chunksize=8), total=n_try):
+            for r in tqdm(pool.imap(worker, range(start, start + n_try), chunksize=8), total=n_try):
                 log["n_attempted"] += 1
                 log["next_idx"] = max(log["next_idx"], r["idx"] + 1)
                 if "__rejected__" in r:
@@ -98,13 +102,16 @@ def generate_dataset(cfg, paths, timings, n_cores=None):
                     pool.terminate()
                     break
         flush()
-        log["n_cores"] = n_cores
         timings.set("data_generation_s", log["wall_s"])
         timings.set("data_generation_cores", n_cores)
         if len(samples) < n_target:
-            print(f"WARNING: only {len(samples)}/{n_target} accepted; re-run `simulate` to top up.")
-        else:
-            save_pickle(path, {"samples": samples, "log": log})   # final merged dataset
+            raise RuntimeError(f"Saved {len(samples)}/{n_target} accepted EOSs. Resume simulation to top up.")
+    if not os.path.exists(path):
+        # Recover when the final shard was committed just before an interruption.
+        save_pickle(path, {"samples": samples, "log": log})
+        timings.set("data_generation_s", log["wall_s"])
+        if log.get("n_cores"):
+            timings.set("data_generation_cores", log["n_cores"])
     samples.sort(key=lambda s: s["idx"])
     samples = samples[:n_target]
     n_att = max(1, log["n_attempted"])
@@ -163,9 +170,9 @@ def compute_norm_stats(samples, sd_floor=1e-3):
 
 def load_splits(cfg, paths, timings=None, generate=True):
     """Return dict(train, val, test, stats, prior) — generating data if needed."""
-    from .io import Timings
-    timings = timings or Timings(paths.result("timings"))
-    samples = generate_dataset(cfg, paths, timings) if generate else \
+    from .io import ScopedTimings
+    timings = timings or ScopedTimings(paths)
+    samples = generate_dataset(cfg, paths, timings, n_cores=cfg.get("n_cores")) if generate else \
         sorted(load_pickle(paths.data("tov_dataset") + ".pkl")["samples"], key=lambda s: s["idx"])
     tr, va, te = split_indices(len(samples), cfg)
     out = {"train": [samples[i] for i in tr], "val": [samples[i] for i in va], "test": [samples[i] for i in te]}

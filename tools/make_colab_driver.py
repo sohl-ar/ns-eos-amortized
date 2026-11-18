@@ -40,9 +40,9 @@ cells = [
     code("!python -m nseos.cli importance convergence   # exact IS correction; TOV convergence"),
     code("!python -m nseos.cli economics systematics summary"),
     md("## Results"),
-    code("from IPython.display import Image, Markdown, display\nimport glob\n"
-         "display(Markdown(open(f'{ROOT}/results/paper_numbers_v2.md').read()))\n"
-         "for f in sorted(glob.glob(f'{ROOT}/figures/*_v2.png')):\n    print(f); display(Image(f, width=900))"),
+    code("from IPython.display import Image, Markdown, display\nfrom nseos.config import Paths, load_config\nfrom nseos.provenance import FIGURE_STAGE\nfrom pathlib import Path\npaths = Paths(load_config())\n"
+         "display(Markdown(Path(paths.result('paper_numbers', 'md')).read_text()))\n"
+         "for name in FIGURE_STAGE:\n    f = Path(paths.figure(name) + '.png')\n    if f.exists(): display(Image(str(f), width=900))"),
     code("# Optional: release the GPU when finished\n# from google.colab import runtime; runtime.unassign()"),
 ]
 for c in cells:

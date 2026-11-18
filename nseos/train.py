@@ -7,7 +7,7 @@ import os
 import time
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
 
 from .io import load_json, save_json
 from .model import EOSCatalogDataset, build_model, collate_fn, move_to_device, n_params
@@ -30,10 +30,15 @@ def make_loader(samples, cfg, shuffle, augment=False, allowed_types=None, catalo
     workers = min(workers, os.cpu_count() or 1)
     ds = EOSCatalogDataset(samples, augment=augment, allowed_types=allowed_types, sim_cfg=cfg["sim"],
                            base_seed=cfg["seed"] + seed, catalog_fn=catalog_fn)
-    return DataLoader(ds, batch_size=batch_size or tc["batch_size"], shuffle=shuffle, collate_fn=collate_fn,
+    if workers and augment:
+        ds.shared_epoch = torch.zeros((), dtype=torch.int64).share_memory_()
+    # A newly spawned iterator consumes a worker seed. Keep this independent
+    # of the sampler so restarting an epoch yields the same shuffled indices.
+    sampler = RandomSampler(ds, generator=torch.Generator().manual_seed(ds.base_seed)) if shuffle else None
+    return DataLoader(ds, batch_size=batch_size or tc["batch_size"], sampler=sampler, collate_fn=collate_fn,
                       num_workers=workers, pin_memory=torch.cuda.is_available(),
                       persistent_workers=workers > 0,
-                      generator=torch.Generator().manual_seed(cfg["seed"] + seed) if shuffle else None)
+                      generator=torch.Generator().manual_seed(ds.base_seed))
 
 
 @torch.no_grad()
@@ -78,10 +83,14 @@ def train_flow_model(model, train_loader, val_loader, device, max_epochs=400, pa
         hist, best, best_epoch, bad = ck["hist"], ck["best"], ck["best_epoch"], ck["bad"]
         best_state, start_epoch, elapsed_before = ck["best_state"], ck["epoch"] + 1, ck["elapsed"]
         torch.set_rng_state(ck["torch_rng"].cpu())   # map_location moved it to the GPU
+        if device.type == "cuda" and ck.get("cuda_rng") is not None:
+            torch.cuda.set_rng_state(ck["cuda_rng"].cpu(), device)
         print(f"[{tag}] resuming from epoch {start_epoch} (best {best:.4f} @ {best_epoch})", flush=True)
     t0 = time.time()
     stopped = bad >= patience
     for epoch in range(start_epoch, 0 if stopped else max_epochs):
+        train_loader.dataset.epoch = epoch
+        train_loader.sampler.generator.manual_seed(train_loader.dataset.base_seed + epoch)
         model.train()
         tt, ts = 0.0, 0
         for batch in train_loader:
@@ -112,7 +121,8 @@ def train_flow_model(model, train_loader, val_loader, device, max_epochs=400, pa
             torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
                         "scaler": scaler.state_dict(), "hist": hist, "best": best, "best_epoch": best_epoch,
                         "bad": bad, "best_state": best_state, "epoch": epoch,
-                        "elapsed": elapsed_before + time.time() - t0, "torch_rng": torch.get_rng_state()}, tmp)
+                        "elapsed": elapsed_before + time.time() - t0, "torch_rng": torch.get_rng_state(),
+                        "cuda_rng": torch.cuda.get_rng_state(device) if device.type == "cuda" else None}, tmp)
             os.replace(tmp, ckpt_path)
         if bad >= patience:
             print(f"[{tag}] early stop at epoch {epoch}")
@@ -137,7 +147,7 @@ def train_run(name, cfg, paths, splits, aggregator="set_transformer", seed=0, ma
     mpath, ipath = os.path.join(rdir, "model.pt"), os.path.join(rdir, "train_info.json")
     stats = splits["stats"] if stats is None else stats
     model = build_model(cfg, stats, aggregator=aggregator, seed=cfg["seed"] + seed, device=device)
-    if os.path.exists(mpath) and not force:
+    if os.path.exists(mpath) and os.path.exists(ipath) and not force:
         model.load_state_dict(torch.load(mpath, map_location=device))
         print(f"[cache] loaded run {name}")
         return model.eval(), load_json(ipath, {})

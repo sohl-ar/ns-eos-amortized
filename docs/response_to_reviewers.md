@@ -2,8 +2,8 @@
 
 Reviewers: **DVmA**, **GBfw**, **ZRfB** (first venue); **HFbp**, **XKKK**, **VWKG** (ML4PS).
 
-Text in ⟦brackets⟧ is filled from `results/*_v2.json` after running the pipeline.
-`results/paper_numbers_v2.md` collects the headline values. Do not send this until every bracket is replaced.
+Text in ⟦brackets⟧ is filled from `results/*_<stage fingerprint>.json` after running the pipeline.
+`results/paper_numbers_<report fingerprint>.md` collects the headline values. Do not send this until every bracket is replaced.
 
 ---
 
@@ -22,8 +22,10 @@ All results below are from the corrected pipeline.
 
 > *"exact construction of the synthetic observations, the observational noise model, the precise likelihood for the pulsar constraints … hard to verify these are solving exactly the same problem"*
 
+We use tabulated SLy4 through 3 MeV/fm³ and a spectral core above it. At the first causal crossing the continuation saturates dP/dε = 1. If the spectral domain ends first, we hold its last dP/dε constant. The pulsar likelihood uses the bracketed maximum mass of this completed EOS. We quantify sensitivity to the continuation by conditioning the importance posterior on stars reaching their maximum inside the unextended spectral domain and reporting the retained probability and effective sample size.
+
 The appendix now states the full generative model:
-- the prior (a box truncated by causality, M_max ≥ 2 M☉ and branch coverage);
+- the box prior restricted to EOSs with a bracketed nonrotating maximum mass ≥ 1.5 M☉ and a stable branch reaching 1 M☉;
 - the catalog composition (N ~ U{1..50}, Dirichlet-multinomial over messengers);
 - the per-messenger mass distributions;
 - the noise-level distributions (independent of θ);
@@ -103,6 +105,7 @@ We added a controlled ablation in which only the aggregator changes: Set Transfo
 
 ## 7. Real-data realism and shared information (HFbp, VWKG, ZRfB)
 
+- The J1614−2230 timing observation is 1.908 ± 0.016 M☉. [Arzoumanian et al. 2018, Table 8](https://arxiv.org/pdf/1801.01837)
 - **Shared information.** J0740+6620's radio mass is the prior of its NICER posterior, so it is no longer counted twice. A sensitivity run with the duplicate is reported: ⟦Δ⟧.
 - **Gaussian summaries.** GW and NICER constraints remain Gaussian summaries, and this is stated as a limitation. GW posteriors are now parsed from the public LIGO releases where possible, and the source used is printed.
 - **Single real catalog.** This is addressed by the synthetic benchmark in § 2.

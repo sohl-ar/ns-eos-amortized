@@ -12,6 +12,16 @@ is skipped next time, so changing a figure or a metric does not retrain anything
 > including a real-data input ~9000 σ out of distribution and a Dynesty likelihood that did
 > not match the simulator. Read [`docs/CHANGES_v2.md`](docs/CHANGES_v2.md) first.
 
+## Stellar model and mass limit
+
+The low-density EOS uses the LALSuite SLy4 table through a pressure of 3 MeV/fm³, including the outer core. The four spectral coefficients describe the core above this match. At the first causal crossing we continue with ε(P) = ε★ + (P − P★), with pressure and energy density in the same units. This selects the stiffest causal continuation. A spectrum that stays causal to 1,500 MeV/fm³ continues at its terminal dP/dε.
+
+The pulsar mass limit is the bracketed peak of the nonrotating mass sequence. The scan extends to 240,000 MeV/fm³ if needed. A solver failure or an unbracketed peak at the cap produces a rejection reason. Dataset records contain the matching pressure, boundary type, peak pressure and strict-support flag. The strict sensitivity in the real-catalog importance stage conditions the weighted posterior on an exact stellar solve whose peak is bracketed within the original spectral domain. Its outputs include retained posterior mass, conditional ESS and normalized sample weights.
+
+The strict probability is the sum of the parent importance weights on classified strict samples. Conditional weights are divided by this probability. The parent posterior uses the interpolated grid likelihood, so the sensitivity also inherits its interpolation error. Unresolved numerical membership is reported separately.
+
+Reproduce the three-policy comparison with `python tools/compare_causality.py --draws 320 --workers 12 --output causality-comparison.json`. Each policy uses the same indexed box-prior draws. The historical endpoint in the lenient arm can be a cutoff mass. Only the extended and strict arms require a bracketed maximum.
+
 ## Layout
 
 ```
@@ -51,7 +61,7 @@ python -m nseos.cli all --root /content/drive/MyDrive/ns_eos_project
 * `--root DIR` (or `$NSEOS_ROOT`) is where data, runs, results (`results/*.json`) and figures go.
 * `--force` recomputes the outputs of the stages you name. Everything else is reused.
 * `--set key.sub=value` overrides config, e.g. `--set ablation.seeds=[0] --set train.max_epochs=50`.
-* Training runs are cached individually (`runs/<name>_v2/model.pt`), so an interrupted
+* Training runs are cached individually (`runs/<name>_<training fingerprint>/model.pt`), so an interrupted
   ablation resumes at the next unfinished run. Dynesty runs are cached individually as well.
 
 | stage | what it produces | cost (RTX 5070 + 7800X3D) |
@@ -72,7 +82,7 @@ python -m nseos.cli all --root /content/drive/MyDrive/ns_eos_project
 | `convergence` | production TOV vs 4× denser / 100× tighter solve | ~10 min CPU |
 | `economics` | offline costs, break-even #analyses, all-subsets workflow on the real catalog | minutes |
 | `systematics` | crust variation (actually applied), σ shift, misreported noise | ~30 min |
-| `summary` | `results/summary_v2.json`, `results/paper_numbers_v2.md` | seconds |
+| `summary` | `results/summary_<tag>.json`, `results/paper_numbers_<tag>.md` | seconds |
 
 ## Tests
 

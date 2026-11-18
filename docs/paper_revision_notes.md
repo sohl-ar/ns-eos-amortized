@@ -6,6 +6,8 @@
 - [ ] Replace the speed-up number with the v2 value and qualify it: "online, amortised; excludes ⟦h⟧ of simulation and ⟦h⟧ of training".
 
 ## Method
+- [ ] For the J1614−2230 catalog entry, cite Arzoumanian et al. (2018), NANOGrav 11-year data set, Table 8, for 1.908 ± 0.016 M☉. Demorest et al. (2010) describes the earlier measurement. [Source table](https://arxiv.org/pdf/1801.01837)
+- [ ] Describe the SLy4 match at 3 MeV/fm³, the causal continuation and terminal-sound-speed rule, and the two-sided bracket defining M_TOV. Give retained posterior mass and conditional ESS for the strict sensitivity.
 - [ ] Add an appendix "Statistical model", copying the generative model from `nseos/simulator.py` and the likelihood from `nseos/likelihood.py`.
 - [ ] State that the encoders take log σ and that σ's are drawn independently of θ.
 - [ ] State per-epoch re-simulation, early stopping and the best epoch.

@@ -4,11 +4,12 @@ the likelihood and the network always see the same forward model.
 Override with a JSON file (``--config my.json``) or ``--set key.sub=value``.
 """
 import copy
+from .provenance import Fingerprints, RESULT_STAGE, FIGURE_STAGE, digest
 import json
 import os
 
 DEFAULT_CONFIG = {
-    "run_tag": "v2",
+    "run_tag": "sly4",
     "seed": 42,
     # optional heavy sub-steps
     "run_derived_test": True,       # evaluate: TOV on posterior draws of 100 test catalogs
@@ -22,7 +23,7 @@ DEFAULT_CONFIG = {
         "gamma2": [-0.6, 0.6],
         "gamma3": [-0.02, 0.02],
     },
-    "physics": {"n_pc": 30, "gamma_crust": 1.35},
+    "physics": {"n_pc": 30},
     "sim": {
         "N_MIN": 1, "N_MAX": 50, "DIRICHLET_ALPHA": [1.0, 1.0, 1.0],
         "GW_M_LO": 1.1, "GW_M_HI": 2.0, "GW_SIG_LT": [40.0, 800.0], "GW_SIG_MC": [5e-4, 3e-2],
@@ -99,26 +100,44 @@ class Paths:
 
     def __init__(self, cfg):
         self.root = cfg["root"]
-        self.tag = cfg["run_tag"]
+        self.fingerprints = Fingerprints(cfg)
+        self.prefix = cfg["run_tag"]
         for d in ("data", "runs", "results", "figures", "reference", "grid"):
             os.makedirs(os.path.join(self.root, d), exist_ok=True)
 
-    def data(self, name):
-        return os.path.join(self.root, "data", f"{name}_{self.tag}")
+    def tag_for(self, stage, inputs=None):
+        key = self.fingerprints.key(stage)
+        return f"{self.prefix}_{key if inputs is None else digest([key, inputs])}"
+
+    @property
+    def tag(self):
+        return self.tag_for("summary")
+
+    def data(self, name, stage="simulate", inputs=None):
+        return os.path.join(self.root, "data", f"{name}_{self.tag_for(stage, inputs)}")
 
     def run(self, run_name):
-        p = os.path.join(self.root, "runs", f"{run_name}_{self.tag}")
+        stage = "train"
+        if run_name.startswith("arch_"):
+            stage = "arch-model"
+        elif run_name.startswith("msg_"):
+            stage = "msg-model"
+        elif run_name == "zero_noise":
+            stage = "pristine-model"
+        p = os.path.join(self.root, "runs", f"{run_name}_{self.tag_for(stage)}")
         os.makedirs(p, exist_ok=True)
         return p
 
-    def result(self, name, ext="json"):
-        return os.path.join(self.root, "results", f"{name}_{self.tag}.{ext}")
+    def result(self, name, ext="json", stage=None):
+        stage = stage or RESULT_STAGE.get(name, name.replace("_", "-"))
+        return os.path.join(self.root, "results", f"{name}_{self.tag_for(stage)}.{ext}")
 
     def figure(self, name):
-        return os.path.join(self.root, "figures", f"{name}_{self.tag}")
+        return os.path.join(self.root, "figures", f"{name}_{self.tag_for(FIGURE_STAGE[name])}")
 
-    def reference(self, name):
-        return os.path.join(self.root, "reference", f"{name}_{self.tag}.pkl")
+    def reference(self, name, catalog):
+        obs = [(o["type"], o["x"], o["sigma"]) for o in catalog]
+        return os.path.join(self.root, "reference", f"{name}_{self.tag_for('nested', obs)}.pkl")
 
     def grid(self):
-        return os.path.join(self.root, "grid", f"tov_grid_{self.tag}.pkl")
+        return os.path.join(self.root, "grid", f"tov_grid_{self.tag_for('grid-build')}.pkl")

@@ -129,18 +129,25 @@ def weighted_resample(samples, weights, n, seed=0):
 
 def c2st(a, b, seed=0, folds=5):
     """Classifier two-sample test accuracy (0.5 = indistinguishable) on standardised samples."""
-    from sklearn.model_selection import StratifiedKFold
+    from sklearn.model_selection import StratifiedGroupKFold
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
     from sklearn.neural_network import MLPClassifier
     n = min(len(a), len(b))
     rng = np.random.default_rng(seed)
     a, b = a[rng.choice(len(a), n, replace=False)], b[rng.choice(len(b), n, replace=False)]
     X = np.concatenate([a, b])
-    X = (X - X.mean(0)) / (X.std(0) + 1e-12)
+    _, groups = np.unique(X, axis=0, return_inverse=True)
+    folds = min(folds, len(np.unique(groups[:n])), len(np.unique(groups[n:])))
+    if folds < 2:
+        return float("nan")
     y = np.r_[np.zeros(n), np.ones(n)]
     accs = []
-    for tr, te in StratifiedKFold(folds, shuffle=True, random_state=seed).split(X, y):
-        clf = MLPClassifier(hidden_layer_sizes=(64, 64), max_iter=1000, early_stopping=True,
-                            random_state=seed).fit(X[tr], y[tr])
+    for tr, te in StratifiedGroupKFold(folds, shuffle=True, random_state=seed).split(X, y, groups):
+        if len(np.unique(y[tr])) < 2 or len(np.unique(y[te])) < 2:
+            return float("nan")
+        clf = make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(64, 64), max_iter=1000, early_stopping=False,
+                            random_state=seed)).fit(X[tr], y[tr])
         accs.append(clf.score(X[te], y[te]))
     return float(np.mean(accs))
 

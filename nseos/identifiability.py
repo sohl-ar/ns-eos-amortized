@@ -26,7 +26,6 @@ def prior_width_table(prior_bounds):
 
 
 def observable_vector(gc, masses, n_pc=60):
-    from scipy.interpolate import CubicSpline
     from .physics import compute_mr_curve
     from .simulator import stable_branch
     curve = compute_mr_curve(list(gc), n_pc=n_pc)
@@ -35,8 +34,8 @@ def observable_vector(gc, masses, n_pc=60):
     Ms, Rs, Ls = stable_branch(curve)
     if len(Ms) < 6 or Ms[0] > masses[0] or Ms[-1] < masses[-1]:
         return None
-    R = CubicSpline(Ms, Rs)(masses)
-    lL = CubicSpline(Ms, np.log(Ls))(masses)
+    R = np.interp(masses, Ms, Rs)
+    lL = np.log(interp_lambda(masses, Ms, Ls))
     return np.concatenate([R, lL, [Ms[-1]]])
 
 

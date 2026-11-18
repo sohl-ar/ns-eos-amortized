@@ -17,12 +17,14 @@ All integrals use Gauss-Legendre in log space. The core is numpy-only (unit-test
 """
 import math
 
+from .grid import build_grid, mass_grid
+
 import numpy as np
 
 from .simulator import SIM_CFG, chirp_mass, interp_lambda, lambda_tilde, stable_branch  # noqa: F401
 
 LOG_SQRT_2PI = 0.5 * math.log(2 * math.pi)
-_GL = {n: np.polynomial.legendre.leggauss(n) for n in (16, 24, 32, 48, 64)}
+_GL = {n: np.polynomial.legendre.leggauss(n) for n in (16, 24, 32, 48, 64, 96, 128, 192)}
 
 
 def _gl_nodes(a, b, n):
@@ -112,17 +114,21 @@ class _GridPoint:
         return np.exp(np.interp(m, self.m_grid, self._logL))
 
 
-def loglike_gw(obs, eos, cfg=SIM_CFG, n_mc=16, n_q=24):
+def loglike_gw(obs, eos, cfg=SIM_CFG, n_mc=96, n_q=32):
     Lt_obs, Mc_obs = obs["x"]
     sLt, sMc = obs["sigma"]
     lo, hi = cfg["GW_M_LO"], min(eos.Mmax, cfg["GW_M_HI"])
     if hi <= lo:
         return -np.inf
     mc_lo, mc_hi = chirp_mass(lo, lo), chirp_mass(hi, hi)
-    a, b = max(mc_lo, Mc_obs - 7 * sMc), min(mc_hi, Mc_obs + 7 * sMc)
-    if b <= a:  # observed Mc far outside the support: integrate over the full support in log space
-        a, b = mc_lo, mc_hi
-    Mc, wMc = _gl_nodes(a, b, n_mc)          # scalar a, b -> shape (n_mc,)
+    nearest = np.clip(Mc_obs, mc_lo, mc_hi)
+    width = np.hypot(nearest - Mc_obs, 10 * sMc)
+    a, b = max(mc_lo, Mc_obs - width), min(mc_hi, Mc_obs + width)
+    # The limiting component for q_min switches at (hi, lo). Split there and
+    # at the measured chirp mass to resolve narrow tidal ridges on either side.
+    cuts = sorted({a, b, *(v for v in (chirp_mass(hi, lo), Mc_obs) if a < v < b)})
+    edges = np.asarray(cuts)
+    Mc, wMc = (v.ravel() for v in _gl_nodes(edges[:-1], edges[1:], n_mc))
     qmin = _q_min(Mc, lo, hi)
     ok = np.isfinite(qmin) & (qmin < 1.0)
     if not ok.any():
@@ -143,9 +149,9 @@ def loglike_nicer(obs, eos, cfg=SIM_CFG, n_m=48):
     lo, hi = cfg["NICER_M_LO"], min(eos.Mmax, cfg["NICER_M_HI"])
     if hi <= lo:
         return -np.inf
-    a, b = max(lo, M_obs - 7 * sM), min(hi, M_obs + 7 * sM)
-    if b <= a:
-        a, b = lo, hi
+    nearest = np.clip(M_obs, lo, hi)
+    width = np.hypot(nearest - M_obs, 10 * sM)
+    a, b = max(lo, M_obs - width), min(hi, M_obs + width)
     m, w = _gl_nodes(a, b, n_m)              # shape (n_m,)
     log_int = np.log(w) + _lognorm(M_obs, m, sM) + _lognorm(R_obs, eos.R(m), sR)
     return _logsumexp(log_int) - math.log(hi - lo)
@@ -178,98 +184,6 @@ def loglike_catalog_eos(catalog, eos, cfg=SIM_CFG):
 
 
 # ── TOV interpolation grid ─────────────────────────────────────────────────────
-def mass_grid(gcfg):
-    return np.round(np.arange(gcfg["m_lo"], gcfg["m_hi"] + 1e-9, gcfg["dm"]), 6)
-
-
-def _grid_point_values(gc, n_pc, m_grid):
-    from .physics import compute_mr_curve
-    try:
-        curve = compute_mr_curve(list(gc), n_pc=n_pc)
-    except Exception:
-        curve = None
-    K = len(m_grid)
-    if curve is None:
-        return np.full(3 + 2 * K, np.nan)
-    Ms, Rs, Ls = stable_branch(curve)
-    if len(Ms) < 3:
-        return np.full(3 + 2 * K, np.nan)
-    R = np.interp(m_grid, Ms, Rs)                        # flat extension beyond the branch ends
-    logL = np.interp(m_grid, Ms, np.log(np.maximum(Ls, 1e-12)))
-    return np.concatenate([[Ms[-1], Ms[0], 1.0], R, logL])
-
-
-def _fill_nans(arr, max_iter=30):
-    """Fill NaN cells with the mean of valid neighbours in the 3^4 stencil (repeat)."""
-    arr = arr.copy()
-    for _ in range(max_iter):
-        nan = np.isnan(arr)
-        if not nan.any():
-            break
-        acc, cnt = np.zeros_like(arr), np.zeros_like(arr)
-        for shift in np.ndindex(3, 3, 3, 3):
-            s = tuple(int(v) - 1 for v in shift)
-            if s == (0, 0, 0, 0):
-                continue
-            rolled = arr
-            for ax, d in enumerate(s):
-                if d:
-                    rolled = np.roll(rolled, d, axis=ax)
-                    idx = [slice(None)] * 4
-                    idx[ax] = 0 if d == 1 else -1      # do not wrap around
-                    rolled = rolled.copy()
-                    rolled[tuple(idx)] = np.nan
-            v = ~np.isnan(rolled)
-            acc[v] += rolled[v]
-            cnt[v] += 1
-        fill = nan & (cnt > 0)
-        arr[fill] = acc[fill] / cnt[fill]
-    if np.isnan(arr).any():
-        arr[np.isnan(arr)] = np.nanmean(arr)
-    return arr
-
-
-def build_grid(cfg, n_cores=None, partial_path=None, block=1000):
-    """TOV grid over the prior box. Resumable: with partial_path, finished blocks of grid points
-    are saved as they complete and skipped on restart."""
-    import multiprocessing
-    import os
-    import pickle
-    from functools import partial
-    from itertools import product
-    gcfg, pb = cfg["grid"], cfg["prior_bounds"]
-    axes = [np.linspace(pb[f"gamma{k}"][0], pb[f"gamma{k}"][1], n) for k, n in enumerate(gcfg["shape"])]
-    m_grid = mass_grid(gcfg)
-    pts = list(product(*axes))
-    worker = partial(_grid_point_values, n_pc=cfg["physics"]["n_pc"], m_grid=m_grid)
-    import time
-    done, elapsed = [], 0.0
-    if partial_path and os.path.exists(partial_path):
-        with open(partial_path, "rb") as fh:
-            st = pickle.load(fh)
-        done, elapsed = st["done"], st["elapsed"]
-        print(f"grid: resuming at point {len(done)} / {len(pts)}")
-    t0 = time.time()
-    with multiprocessing.Pool(n_cores or multiprocessing.cpu_count()) as pool:
-        for i0 in range(len(done), len(pts), block):
-            done.extend(pool.map(worker, pts[i0:i0 + block], chunksize=10))
-            if partial_path:
-                with open(partial_path + ".tmp", "wb") as fh:
-                    pickle.dump({"done": done, "elapsed": elapsed + time.time() - t0}, fh)
-                os.replace(partial_path + ".tmp", partial_path)
-            print(f"grid: {len(done)} / {len(pts)} points", flush=True)
-    vals = np.array(done).reshape(*gcfg["shape"], -1)
-    tov_ok = ~np.isnan(vals[..., 0])
-    for f in range(vals.shape[-1]):
-        if f == 2:
-            continue
-        vals[..., f] = _fill_nans(vals[..., f])
-    vals[..., 2] = tov_ok.astype(float)
-    return {"axes": axes, "values": vals, "m_grid": m_grid, "shape": list(gcfg["shape"]),
-            "n_pc": cfg["physics"]["n_pc"], "frac_tov_ok": float(tov_ok.mean()),
-            "build_s": elapsed + time.time() - t0}
-
-
 class GridEOS:
     def __init__(self, grid):
         from scipy.interpolate import RegularGridInterpolator

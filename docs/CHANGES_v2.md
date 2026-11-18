@@ -1,9 +1,18 @@
 # Changes in v2
 
-**All numbers have to be regenerated.** The simulator changed, so no v1 cache,
-checkpoint or grid is reused (v2 artefacts carry the `_v2` suffix).
+## Current forward model and cache keys
+
+The default is the SLy4 low-density table matched to a spectral core at 3 MeV/fm³. At the first causal crossing, dP/dε stays at one. Spectra reaching the table ceiling continue at their terminal sound speed. The stellar sequence must contain a two-sided mass peak before an EOS can enter the dataset. The technical prior also requires M_TOV ≥ 1.5 M☉ and branch coverage down to 1 M☉.
+
+Real-catalog importance outputs include a strict-support sensitivity with posterior mass and ESS. GW integration uses 96 chirp-mass nodes per panel and 32 mass-ratio nodes. The regression suite checks all 36 combinations of masses and noise scales against a 192 × 192 reference. Observable calibration records the IDs of catalogs with insufficient draws and its effective denominators.
+
+Artifacts carry a run label and an input fingerprint. Simulation depends on the EOS, table, prior and simulation settings. Grid construction has its own key. Training depends on the dataset and training recipe. Nested sampling includes the actual numerical catalog, grid, likelihood and sampler settings. Figure filenames follow their input stage. Use the Colab driver or `Paths` to resolve the current filenames. Earlier filenames and convergence measurements below document historical runs.
 
 ## Bugs found while addressing the reviews
+
+The paired preproduction comparison used 320 indexed box-prior draws, seed 42, stream 1, 30 initial central pressures and 12 workers. The old endpoint rule accepted 183 EOSs, including 150 without a bracketed peak. Causal continuation accepted 203, including 169 whose maximum-mass star used the continuation. The strict rule accepted 34. Independent strict solves agreed with the primary model’s strict flag on all 320 draws.
+
+Among the 183 draws accepted under both the old and extended rules, the median increase from the old mass limit to M_TOV was 0.561 M☉, with a 95th-percentile increase of 1.834 M☉. R₁.₄ and Λ₁.₄ were identical at the reported precision on this paired subset. Thirteen draws reached their peak above the 1,500 MeV/fm³ table edge without a prior causal crossing. All thirteen failed the 1.5 M☉ acceptance cut. This comparison describes the prior.
 
 These affect the v1 / submitted numbers.
 
