@@ -1,96 +1,148 @@
-# nseos — amortised multi-messenger neutron-star EOS inference (revision v2)
+# Amortised multi-messenger inference of the neutron-star equation of state
 
-Type-specific encoders → Set Transformer → conditional flow matching, trained on TOV
-simulations. The model returns a posterior over the 4-parameter spectral EOS for a
-heterogeneous catalog of GW (Λ̃, 𝓜), NICER (M, R) and radio-timing (M) observations.
+A neural network that reads a catalog of neutron-star observations — gravitational-wave tidal deformabilities,
+NICER mass–radius measurements and radio pulsar masses — and returns the posterior over the dense-matter equation
+of state (EOS) **in under a second**, instead of the minutes-to-hours a nested-sampling run takes. Its posterior
+is checked against dynesty run with the *same* likelihood, and an importance-sampling step can make it exact.
 
-This repository replaces the monolithic Colab notebook (kept in `legacy/` for provenance)
-with a package plus **cached pipeline stages**. Each stage writes its outputs to disk and
-is skipped next time, so changing a figure or a metric does not retrain anything.
+> **Status (2026-11-19):** production run `run_v3` is in progress — 9 of 17 stages done.
+> The headline real-data comparison is finished: **the network and dynesty are statistically indistinguishable**
+> (JS ≤ 0.0014 bits, at the sampling-noise floor). → **[RESULTS.md](RESULTS.md)**
 
-> **v2 is not a cosmetic refactor.** Several v1 bugs changed the published numbers,
-> including a real-data input ~9000 σ out of distribution and a Dynesty likelihood that did
-> not match the simulator. Read [`docs/CHANGES_v2.md`](docs/CHANGES_v2.md) first.
+---
 
-## Stellar model and mass limit
+## Start here
 
-The low-density EOS uses the LALSuite SLy4 table through a pressure of 3 MeV/fm³, including the outer core. The four spectral coefficients describe the core above this match. At the first causal crossing we continue with ε(P) = ε★ + (P − P★), with pressure and energy density in the same units. This selects the stiffest causal continuation. A spectrum that stays causal to 1,500 MeV/fm³ continues at its terminal dP/dε.
+| I want to… | go to |
+|---|---|
+| see the results | **[RESULTS.md](RESULTS.md)** — headline numbers, figures, caveats |
+| browse every output file and figure | [`results/run_v3/MANIFEST.md`](results/run_v3/MANIFEST.md) |
+| know what changed since the submitted version (and why the old numbers are invalid) | [`docs/CHANGES_v2.md`](docs/CHANGES_v2.md) |
+| read the reply to the reviewers | [`docs/response_to_reviewers.md`](docs/response_to_reviewers.md) |
+| see what must change in the paper text | [`docs/paper_revision_notes.md`](docs/paper_revision_notes.md) |
+| understand the physics (EOS, TOV, causality, prior) | [`docs/PHYSICS.md`](docs/PHYSICS.md) |
+| run it myself | [Running](#running) |
+| see the original notebook | [`legacy/`](legacy/) |
 
-The pulsar mass limit is the bracketed peak of the nonrotating mass sequence. The scan extends to 240,000 MeV/fm³ if needed. A solver failure or an unbracketed peak at the cap produces a rejection reason. Dataset records contain the matching pressure, boundary type, peak pressure and strict-support flag. The strict sensitivity in the real-catalog importance stage conditions the weighted posterior on an exact stellar solve whose peak is bracketed within the original spectral domain. Its outputs include retained posterior mass, conditional ESS and normalized sample weights.
+## Results at a glance
 
-The strict probability is the sum of the parent importance weights on classified strict samples. Conditional weights are divided by this probability. The parent posterior uses the interpolated grid likelihood, so the sensitivity also inherits its interpolation error. Unresolved numerical membership is reported separately.
+| | |
+|---|---|
+| Real data: amortised vs dynesty | JS 0.0008–0.0014 bits per parameter (floor 0.0008–0.0017); C2ST 0.490; means within 0.033 σ |
+| R₁.₄ (radius of a 1.4 M☉ star) | 12.22 [11.46, 12.94] km (dynesty 12.19) |
+| M_TOV (maximum mass) | 2.54 [2.21, 2.88] M☉ (dynesty 2.55) |
+| Calibration (15,000 test catalogs) | coverage within ~1 % at 50/68/90/95 %; TARP max deviation 0.029 |
+| Information vs prior (γ₀ / γ₁ / γ₂ / γ₃) | MAE ratio 0.32 / 0.72 / 0.98 / 1.00 — γ₂, γ₃ are unidentifiable even at zero noise |
+| Speed (real catalog) | 0.84 s vs 117 s for dynesty on the same grid (≈140×; ≈770× per effective sample) |
 
-Reproduce the three-policy comparison with `python tools/compare_causality.py --draws 320 --workers 12 --output causality-comparison.json`. Each policy uses the same indexed box-prior draws. The historical endpoint in the lenient arm can be a cutoff mass. Only the extended and strict arms require a bracketed maximum.
+<p align="center"><img src="results/run_v3/figures/fig1_mr_mlambda_sly4_b9fe44082d008128.png" width="820"></p>
 
-## Layout
+## How it works
+
+```mermaid
+flowchart LR
+    P["prior over EOS<br/>(4 spectral coefficients)"] --> T["TOV + tidal solver<br/>SLy4 crust, causal core"]
+    T --> S["simulator<br/>random catalogs: GW, NICER, pulsars"]
+    S --> N["Set Transformer encoder<br/>+ conditional flow matching<br/>(3-seed ensemble)"]
+    N --> Q["amortised posterior<br/>(&lt; 1 s per catalog)"]
+    T --> G["likelihood grid<br/>(exact simulator marginal)"]
+    G --> D["dynesty reference"]
+    G --> I["importance-sampling<br/>correction"]
+    Q --> I
+    Q -.compare.-> D
+```
+
+1. **Physics** ([`docs/PHYSICS.md`](docs/PHYSICS.md)). Each EOS is a 4-parameter spectral core on an SLy4 crust,
+   continued causally. The TOV + Love-number equations give the mass–radius–Λ curve and the maximum mass.
+2. **Simulator** (`nseos/simulator.py`). Draws catalogs of 1–50 observations with a random mix of messengers and
+   random noise levels, so the network sees the same kind of input as real data.
+3. **Network** (`nseos/model.py`). Type-specific encoders → Set Transformer → conditional flow matching, trained on
+   100,000 simulated EOS with fresh noise every epoch.
+4. **Reference** (`nseos/likelihood.py`, `nseos/reference.py`). The *exact* marginal likelihood of the simulator
+   (tested against brute-force Monte Carlo), sampled with dynesty, so both methods target the same posterior.
+5. **Correction** (`nseos/importance.py`). Reweights the network's samples with the exact likelihood, which makes
+   the result asymptotically exact and gives the evidence.
+
+## Repository map
 
 ```
-nseos/
-  config.py          all settings (prior, simulator, model, training, ablations, dynesty …)
-  simulator.py       the explicit generative model (numpy only)            ← fixes B1 B2 B6
-  physics.py         spectral EOS + TOV/tidal solver                        ← fix B4 (crust)
-  data.py            seeded, resumable generation; split; log-σ normalisation
-  model.py           dataset (per-epoch re-simulation), Set Transformer / DeepSets / padded-MLP
-  train.py           early stopping, fixed-RNG validation, cached runs      ← fix B7
-  inference.py       posterior sampling truncated to the prior box (no clipping)
-  importance.py      importance-sampling correction (exact likelihood; ESS, evidence)
-  likelihood.py      simulator-exact likelihood + validated TOV grid        ← fix B3
-  reference.py       dynesty runs (weighted samples, ESS, seeds), resumable
-  realdata.py        GW HDF5 parser, NICER/pulsar catalog, dedup, OOD check ← fixes B8 B9
-  identifiability.py Fisher/Jacobian of the TOV map, sensitivity scans, model-free regressor
-  metrics.py         JS in bits (matched n + floors), C2ST, SBC, coverage, TARP, contraction
-  plotting.py        overlaid corner, M–R / M–Λ bands (new Fig. 1), true-vs-pred, calibration
-  stages.py, cli.py  the pipeline
-tests/               numpy-only tests (likelihood = simulator marginal; simulator properties)
-notebooks/colab_driver.ipynb   thin Colab front-end that calls the stages
-docs/                changes, response-to-reviewers draft, paper revision notes
+RESULTS.md            results of the production run (start here)
+results/run_v3/       JSON outputs, figures and filtered log of that run (MANIFEST.md lists them)
+docs/                 CHANGES_v2 · response_to_reviewers · paper_revision_notes · PHYSICS
+nseos/                the package
+  config.py           every setting (prior, simulator, model, training, ablations, dynesty …)
+  physics.py          spectral EOS on the SLy4 crust, TOV + tidal solver, maximum-mass search
+  simulator.py        the generative model of observation catalogs
+  data.py             seeded, resumable, sharded simulation; split; normalisation
+  model.py            per-epoch re-simulation dataset; Set Transformer / DeepSets / padded-MLP encoders
+  train.py            training with checkpoint/resume, early stopping, ensembles
+  inference.py        posterior sampling inside the prior box
+  likelihood.py       exact simulator-marginal likelihood (GW, NICER, pulsar)
+  grid.py             the TOV grid used by the likelihood, with validation
+  reference.py        dynesty runs with checkpoint/resume and evidence
+  importance.py       importance-sampling correction (ESS, evidence)
+  identifiability.py  Fisher / sensitivity analysis, model-free regressor
+  metrics.py          JS in bits with floors, C2ST, SBC, coverage, TARP
+  realdata.py         real catalog: LIGO HDF5 parser, NICER / pulsar values, dedup policy
+  plotting.py         all figures
+  provenance.py       input fingerprints that key every cached artefact
+  stages.py, cli.py   the 17-stage pipeline
+tests/                35 tests (likelihood = simulator marginal, physics checks, flow log-density, …)
+tools/                snapshot_results.py · compare_causality.py · make_colab_driver.py
+configs/              smoke.json (15-minute end-to-end check) · resume_test.json
+notebooks/            colab_driver.ipynb — thin Colab front-end that calls the stages
+legacy/               the original v1 notebook, kept for provenance
 ```
 
 ## Running
 
-Local GPU: install the CUDA build of PyTorch first (`pip install torch --index-url https://download.pytorch.org/whl/cu130`; RTX 50-series needs CUDA ≥ 12.8).
-A ~15-minute end-to-end check: `python -m nseos.cli all --config configs/smoke.json --root smoke_run`.
-
 ```bash
-pip install -e .                      # or: pip install -r requirements.txt
-python -m nseos.cli list              # show stages in order
-python -m nseos.cli simulate train evaluate
-python -m nseos.cli all --root /content/drive/MyDrive/ns_eos_project
+pip install -e .                                     # or: pip install -r requirements.txt
+python -m nseos.cli list                             # stages in order
+python -m nseos.cli all --config configs/smoke.json --root smoke_run   # ~15-minute check
+python -m nseos.cli all --root run_v3 --log run_v3.log                 # full run
 ```
 
-* `--root DIR` (or `$NSEOS_ROOT`) is where data, runs, results (`results/*.json`) and figures go.
-* `--force` recomputes the outputs of the stages you name. Everything else is reused.
-* `--set key.sub=value` overrides config, e.g. `--set ablation.seeds=[0] --set train.max_epochs=50`.
-* Training runs are cached individually (`runs/<name>_<training fingerprint>/model.pt`), so an interrupted
-  ablation resumes at the next unfinished run. Dynesty runs are cached individually as well.
+For a local GPU, install the CUDA build of PyTorch first
+(`pip install torch --index-url https://download.pytorch.org/whl/cu130`; RTX 50-series needs CUDA ≥ 12.8).
 
-| stage | what it produces | cost (RTX 5070 + 7800X3D) |
-|---|---|---|
-| `simulate` | 100k accepted EOS + catalogs + curves, prior probe, normalisation | ~8–15 h (16 CPU threads) |
-| `train` | 3-seed ensemble of the main Set Transformer, loss curve, best epochs | ~3–6 h (RTX 5070: 26 s/epoch) |
-| `evaluate` | per-param accuracy vs prior, by-N, nested-N, SBC/coverage/TARP, true-vs-pred, Ridge, permutation/padding tests, speed/NFE, derived-quantity test | ~1 h |
-| `grid` | 20×20×10×5 TOV grid, interpolation-error + truncation-boundary validation | ~30 min CPU |
-| `realdata` | real catalog (dedup & duplicate J0740), OOD report, SBI posterior, M_max/R₁.₄/Λ₁.₄ | minutes |
-| `reference-real` | dynesty ×2 seeds (dedup) + 1 (duplicate) with the simulator-exact likelihood | ~1 h CPU |
-| `compare-real` | JS (bits, matched n, floors), C2ST, correlations, derived quantities for both, overlaid corner, **new Fig. 1** | minutes |
-| `identifiability` | prior-width table, Fisher/CRB per noise scenario, eigen-spectrum, scans | ~30 min CPU |
-| `zero-noise` | near-zero-noise flow model (20k, own normalisation) + model-free GBR check | GPU ~1 h |
-| `ablate-arch` | Set Transformer vs DeepSets vs padded MLP × 3 seeds, identical decoder/data/budget | GPU many h |
-| `ablate-messenger` | main model restricted per messenger + retrained per subset | GPU h |
-| `reference-synth` | dynesty on 24 synthetic catalogs (N ≤ 20) vs amortised posterior | CPU 1.5–3 h |
-| `importance` | importance-sampling correction with the exact likelihood: efficiency, log Z vs dynesty, exact real-data posterior & derived quantities | ~20 min |
-| `convergence` | production TOV vs 4× denser / 100× tighter solve | ~10 min CPU |
-| `economics` | offline costs, break-even #analyses, all-subsets workflow on the real catalog | minutes |
-| `systematics` | crust variation (actually applied), σ shift, misreported noise | ~30 min |
-| `summary` | `results/summary_<tag>.json`, `results/paper_numbers_<tag>.md` | seconds |
+- **Everything resumes.** Each stage writes its outputs under `--root` and leaves a completion marker keyed by an
+  input fingerprint. Rerunning the same command after an interruption skips finished stages. Simulation resumes
+  from the last 1,000-EOS shard, training from the last epoch, and dynesty from its last checkpoint.
+- `--force` recomputes the stages you name. `--set key.sub=value` overrides a config value
+  (e.g. `--set train.max_epochs=50`). Changing a setting changes the fingerprint, so only affected stages rerun.
+- `python tools/snapshot_results.py --root run_v3 --label run_v3 --log run_v3.log` copies the lightweight
+  outputs into `results/` for browsing.
+
+### Stages and measured cost (RTX 5070 + Ryzen 7 7800X3D)
+
+| # | stage | what it produces | measured |
+|---|---|---|---|
+| 1 | `simulate` | 100k accepted EOS + curves, prior probe, normalisation | 14.5 h (16 threads) |
+| 2 | `train` | 3-seed Set Transformer ensemble | 5.7 h |
+| 3 | `evaluate` | accuracy vs prior, by N, nested N, SBC / coverage / TARP, symmetry and speed tests, derived observables | 2.0 h |
+| 4 | `grid` | 20×20×10×5 TOV grid + interpolation validation | 2.0 h |
+| 5 | `realdata` | real catalog, OOD check, amortised posterior, M_TOV / R₁.₄ / Λ₁.₄ | 26 min |
+| 6 | `reference-real` | dynesty × 3 runs on the real catalog | 2 min |
+| 7 | `compare-real` | JS / C2ST / moments / derived, corner overlay, Fig. 1 | 33 min |
+| 8 | `identifiability` | Fisher analysis per noise scenario, sensitivity scans | 34 min |
+| 9 | `zero-noise` | near-zero-noise model + model-free regressor | 21 min |
+| 10 | `ablate-arch` | Set Transformer vs DeepSets vs padded MLP × 3 seeds | ~7 h |
+| 11 | `ablate-messenger` | contribution of each messenger | — |
+| 12 | `reference-synth` | dynesty vs amortised on 24 synthetic catalogs | — |
+| 13 | `importance` | exact importance-sampling correction, evidence, strict-causality sensitivity | — |
+| 14 | `convergence` | TOV discretisation error vs a 4× denser, 100× tighter solve | — |
+| 15 | `economics` | offline costs, break-even, all-subsets workflow | — |
+| 16 | `systematics` | crust variation, noise misreport | — |
+| 17 | `summary` | `summary_*.json`, `paper_numbers_*.md` | — |
 
 ## Tests
 
 ```bash
-python -m pytest tests -q
+python -m pytest tests -q        # 35 tests, ~2 minutes
 ```
 
-`tests/test_likelihood_matches_simulator.py` checks that every likelihood term equals the
-Monte-Carlo marginal of the simulator (GW, NICER, pulsar) and integrates to 1, including the
-GW170817-like case with σ_𝓜 = 10⁻³. This is the direct answer to "do Dynesty and the network
-target the same posterior?".
+`tests/test_likelihood_matches_simulator.py` checks that every likelihood term equals the Monte-Carlo marginal of
+the simulator and integrates to 1, including a GW170817-like case with σ_𝓜 = 10⁻³. It is the direct answer to
+"do dynesty and the network target the same posterior?". Physics tests check SLy4 against known values
+(R₁.₄ ≈ 11.7 km, Λ₁.₄ ≈ 300), the Newtonian limit of k₂, and causality of the continuation.
